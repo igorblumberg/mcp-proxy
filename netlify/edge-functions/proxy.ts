@@ -14,12 +14,6 @@ export default async (request: Request) => {
         'Access-Control-Allow-Headers': 'Content-Type, Authorization, Mcp-Session-Id, Accept, Accept-Encoding',
         'Access-Control-Max-Age': '86400',
       }
-  
-  // For OAuth metadata endpoints, request uncompressed response
-  if (normalizedPath === '/.well-known/oauth-authorization-server' || 
-      normalizedPath === '/.well-known/openid-configuration') {
-    headers.set('Accept-Encoding', 'identity')
-  }
     })
   }
   
@@ -103,6 +97,12 @@ export default async (request: Request) => {
     } else {
       body = request.body
     }
+  }
+  
+  // For OAuth metadata endpoints, request uncompressed response
+  if (normalizedPath === '/.well-known/oauth-authorization-server' || 
+      normalizedPath === '/.well-known/openid-configuration') {
+    headers.set('Accept-Encoding', 'identity')
   }
 
   // Handle query parameters for GET requests (OAuth authorize)
