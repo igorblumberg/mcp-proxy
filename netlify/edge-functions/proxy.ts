@@ -16,6 +16,12 @@ export default async (request: Request) => {
     console.log('✅ Stripped Content-Length: 0 header')
   }
 
+  // For OAuth metadata endpoints, request uncompressed response
+  if (path === '/.well-known/oauth-authorization-server' || 
+      path === '/.well-known/openid-configuration') {
+    headers.set('Accept-Encoding', 'identity')
+  }
+
   // For OAuth flow, we need to handle redirect_uri parameter
   let body: BodyInit | undefined = undefined
   if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -93,6 +99,8 @@ export default async (request: Request) => {
       method: request.method,
       headers: headers,
       body: body,
+      // Disable automatic decompression so we can handle it manually
+      compress: false,
     })
 
     // Handle redirects in OAuth flow
@@ -178,7 +186,20 @@ export default async (request: Request) => {
     // Handle OAuth metadata endpoint - rewrite URLs in response
     if (path === '/.well-known/oauth-authorization-server' || 
         path === '/.well-known/openid-configuration') {
-      const text = await response.text()
+      
+      let text: string
+      try {
+        text = await response.text()
+      } catch (e) {
+        console.error('Failed to read response text:', e)
+        // Try to read as arrayBuffer and convert
+        const buffer = await response.arrayBuffer()
+        const decoder = new TextDecoder()
+        text = decoder.decode(buffer)
+      }
+      
+      console.log(`OAuth metadata response: ${text.substring(0, 200)}...`)
+      
       try {
         const metadata = JSON.parse(text)
         
@@ -210,18 +231,25 @@ export default async (request: Request) => {
         responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
         responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
         responseHeaders.set('Content-Type', 'application/json')
+        responseHeaders.delete('content-encoding')
+        responseHeaders.delete('content-length')
         
-        return new Response(JSON.stringify(metadata, null, 2), {
+        const modifiedContent = JSON.stringify(metadata, null, 2)
+        responseHeaders.set('Content-Length', modifiedContent.length.toString())
+        
+        return new Response(modifiedContent, {
           status: response.status,
           headers: responseHeaders
         })
       } catch (e) {
         console.error('Failed to parse OAuth metadata:', e)
+        console.error('Raw text first 500 chars:', text.substring(0, 500))
         // If parsing fails, return the original text with CORS headers
         const responseHeaders = new Headers(response.headers)
         responseHeaders.set('Access-Control-Allow-Origin', '*')
         responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
         responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
+        responseHeaders.delete('content-encoding')
         
         return new Response(text, {
           status: response.status,
