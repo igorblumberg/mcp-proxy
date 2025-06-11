@@ -19,7 +19,10 @@ export default async (request: Request) => {
   
   // Forward the path after /proxy to your Worker
   const path = url.pathname.replace('/proxy', '') || '/'
-  const proxyUrl = targetUrl + path + url.search
+  
+  // Special handling for .well-known paths that might be requested incorrectly
+  const normalizedPath = path.replace(/\/sse\/.well-known/, '/.well-known')
+  const proxyUrl = targetUrl + normalizedPath + url.search
   
   console.log(`Proxying ${request.method} ${url.pathname} -> ${proxyUrl}`)
   console.log(`Headers:`, Object.fromEntries(request.headers.entries()))
@@ -32,8 +35,8 @@ export default async (request: Request) => {
   }
 
   // For OAuth metadata endpoints, request uncompressed response
-  if (path === '/.well-known/oauth-authorization-server' || 
-      path === '/.well-known/openid-configuration') {
+  if (normalizedPath === '/.well-known/oauth-authorization-server' || 
+      normalizedPath === '/.well-known/openid-configuration') {
     headers.set('Accept-Encoding', 'identity')
   }
   
@@ -183,7 +186,7 @@ export default async (request: Request) => {
     }
 
     // For SSE responses, ensure proper headers
-    if (path === '/sse' || response.headers.get('Content-Type')?.includes('text/event-stream')) {
+    if (normalizedPath === '/sse' || response.headers.get('Content-Type')?.includes('text/event-stream')) {
       const responseHeaders = new Headers(response.headers)
       responseHeaders.set('Cache-Control', 'no-cache')
       responseHeaders.set('Connection', 'keep-alive')
@@ -202,8 +205,8 @@ export default async (request: Request) => {
     }
 
     // Handle OAuth metadata endpoint - rewrite URLs in response
-    if (path === '/.well-known/oauth-authorization-server' || 
-        path === '/.well-known/openid-configuration') {
+    if (normalizedPath === '/.well-known/oauth-authorization-server' || 
+        normalizedPath === '/.well-known/openid-configuration') {
       
       let text: string
       try {
@@ -291,16 +294,21 @@ export default async (request: Request) => {
     return proxyResponse
   } catch (error) {
     console.error('❌ Proxy error:', error)
+    console.error('Stack trace:', error.stack)
     return new Response(JSON.stringify({ 
       error: 'Proxy failed', 
       details: error.message,
-      path: path,
-      targetUrl: finalProxyUrl
+      path: normalizedPath,
+      targetUrl: finalProxyUrl,
+      method: request.method,
+      headers: Object.fromEntries(headers.entries())
     }), { 
       status: 500,
       headers: { 
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Mcp-Session-Id'
       }
     })
   }
