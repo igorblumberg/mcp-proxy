@@ -3,6 +3,14 @@ export default async (request: Request) => {
   const targetUrl = 'https://my-dimona-mcp.igor-9a5.workers.dev'
   const url = new URL(request.url)
   
+  console.log('========== INCOMING REQUEST ==========')
+  console.log(`Method: ${request.method}`)
+  console.log(`URL: ${url.pathname}${url.search}`)
+  console.log('Headers:')
+  request.headers.forEach((value, key) => {
+    console.log(`  ${key}: ${value}`)
+  })
+  
   // Handle CORS preflight requests
   if (request.method === 'OPTIONS') {
     console.log('🔀 Handling OPTIONS preflight request')
@@ -19,290 +27,111 @@ export default async (request: Request) => {
   
   // Forward the path after /proxy to your Worker
   const path = url.pathname.replace('/proxy', '') || '/'
+  const proxyUrl = targetUrl + path + url.search
   
-  // Special handling for .well-known paths that might be requested incorrectly
-  const normalizedPath = path.replace(/\/sse\/.well-known/, '/.well-known')
-  const proxyUrl = targetUrl + normalizedPath + url.search
+  console.log(`\n🎯 Proxying to: ${proxyUrl}`)
+
+  // Clone headers and process them
+  const headers = new Headers()
+  let contentLengthRemoved = false
   
-  console.log(`Proxying ${request.method} ${url.pathname} -> ${proxyUrl}`)
-  console.log(`Normalized path: ${normalizedPath}`)
+  request.headers.forEach((value, key) => {
+    // Skip Content-Length: 0 header
+    if (key.toLowerCase() === 'content-length' && value === '0') {
+      console.log('❌ REMOVING Content-Length: 0 header')
+      contentLengthRemoved = true
+      return
+    }
+    
+    // Skip host header (will be set by fetch)
+    if (key.toLowerCase() === 'host') {
+      return
+    }
+    
+    // Skip some Netlify-specific headers
+    if (key.toLowerCase().startsWith('x-nf-') || 
+        key.toLowerCase() === 'cdn-loop' ||
+        key.toLowerCase() === 'x-forwarded-for') {
+      console.log(`⏩ Skipping Netlify header: ${key}`)
+      return
+    }
+    
+    headers.set(key, value)
+  })
+  
+  console.log('\n📤 OUTGOING HEADERS:')
+  headers.forEach((value, key) => {
+    console.log(`  ${key}: ${value}`)
+  })
 
-  // Clone headers and strip Content-Length: 0
-  const headers = new Headers(request.headers)
-  if (headers.get('Content-Length') === '0') {
-    headers.delete('Content-Length')
-    console.log('✅ Stripped Content-Length: 0 header')
-  }
-
-  // For OAuth flow, we need to handle redirect_uri parameter
+  // Handle request body
   let body: BodyInit | undefined = undefined
   
-  // Special handling for SSE POST requests
-  if (request.method === 'POST' && normalizedPath === '/sse') {
-    const clonedRequest = request.clone()
-    const bodyText = await clonedRequest.text()
-    console.log('📨 SSE POST body:', bodyText)
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    // For POST/PUT requests, we need to handle the body
+    const contentType = headers.get('Content-Type')
     
-    // Set the body for the proxied request
-    body = bodyText
-    headers.set('Content-Length', bodyText.length.toString())
-  } else if (request.method !== 'GET' && request.method !== 'HEAD') {
-    // Check if this is an OAuth authorize or token request
-    if (path === '/authorize' || path === '/token') {
-      const contentType = headers.get('Content-Type')
+    if (contentLengthRemoved) {
+      console.log('⚠️  Content-Length was 0, checking for actual body content...')
       
-      if (contentType?.includes('application/x-www-form-urlencoded')) {
-        // Parse form data to check for redirect_uri
-        const formData = await request.formData()
-        const params = new URLSearchParams()
+      try {
+        const clonedRequest = request.clone()
+        const bodyText = await clonedRequest.text()
         
-        for (const [key, value] of formData.entries()) {
-          if (key === 'redirect_uri' && typeof value === 'string') {
-            // Rewrite redirect_uri to use proxy URL
-            const redirectUri = new URL(value)
-            if (redirectUri.pathname.startsWith('/proxy/')) {
-              // Already proxied, use as-is
-              params.append(key, value)
-            } else {
-              // Add proxy prefix
-              redirectUri.pathname = '/proxy' + redirectUri.pathname
-              params.append(key, redirectUri.toString())
-              console.log(`🔄 Rewriting redirect_uri: ${value} -> ${redirectUri.toString()}`)
-            }
-          } else {
-            params.append(key, value.toString())
-          }
+        if (bodyText.length > 0) {
+          console.log(`📝 Body has content (${bodyText.length} chars): ${bodyText.substring(0, 200)}...`)
+          body = bodyText
+          headers.set('Content-Length', bodyText.length.toString())
+          console.log(`✅ Set new Content-Length: ${bodyText.length}`)
+        } else {
+          console.log('📭 Body is actually empty')
+          // Don't set Content-Length, let fetch handle it
         }
-        
-        const bodyString = params.toString()
-        body = bodyString
-        headers.set('Content-Length', bodyString.length.toString())
-      } else if (contentType?.includes('application/json')) {
-        // Handle JSON body
-        const jsonBody = await request.json()
-        if (jsonBody.redirect_uri) {
-          const redirectUri = new URL(jsonBody.redirect_uri)
-          if (!redirectUri.pathname.startsWith('/proxy/')) {
-            redirectUri.pathname = '/proxy' + redirectUri.pathname
-            jsonBody.redirect_uri = redirectUri.toString()
-            console.log(`🔄 Rewriting JSON redirect_uri: ${jsonBody.redirect_uri}`)
-          }
-        }
-        const bodyString = JSON.stringify(jsonBody)
-        body = bodyString
-        headers.set('Content-Length', bodyString.length.toString())
-      } else {
-        body = request.body
+      } catch (e) {
+        console.log('⚠️  Error reading body:', e)
       }
     } else {
+      // Normal body handling
       body = request.body
-    }
-  }
-  
-  // For OAuth metadata endpoints, request uncompressed response
-  if (normalizedPath === '/.well-known/oauth-authorization-server' || 
-      normalizedPath === '/.well-known/openid-configuration') {
-    headers.set('Accept-Encoding', 'identity')
-  }
-
-  // Handle query parameters for GET requests (OAuth authorize)
-  let finalProxyUrl = proxyUrl
-  if (request.method === 'GET' && path === '/authorize') {
-    const searchParams = new URLSearchParams(url.search)
-    const redirectUri = searchParams.get('redirect_uri')
-    
-    if (redirectUri) {
-      const parsedRedirectUri = new URL(redirectUri)
-      if (!parsedRedirectUri.pathname.startsWith('/proxy/')) {
-        parsedRedirectUri.pathname = '/proxy' + parsedRedirectUri.pathname
-        searchParams.set('redirect_uri', parsedRedirectUri.toString())
-        finalProxyUrl = targetUrl + path + '?' + searchParams.toString()
-        console.log(`🔄 Rewriting GET redirect_uri in URL: ${finalProxyUrl}`)
-      }
     }
   }
 
   try {
-    const response = await fetch(finalProxyUrl, {
+    console.log('\n🚀 Making request to Cloudflare Worker...')
+    const response = await fetch(proxyUrl, {
       method: request.method,
       headers: headers,
       body: body,
-      // Disable automatic decompression so we can handle it manually
-      compress: false,
+      // Let fetch handle compression
+      redirect: 'manual', // Handle redirects manually
     })
 
-    // Handle redirects in OAuth flow
+    console.log('\n========== RESPONSE ==========')
+    console.log(`Status: ${response.status} ${response.statusText}`)
+    console.log('Response Headers:')
+    response.headers.forEach((value, key) => {
+      console.log(`  ${key}: ${value}`)
+    })
+
+    // Handle redirects
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('Location')
       if (location) {
-        try {
-          const redirectUrl = new URL(location)
-          
-          // If redirect points to the worker domain, rewrite to proxy domain
-          if (redirectUrl.hostname === 'my-dimona-mcp.igor-9a5.workers.dev') {
-            redirectUrl.hostname = url.hostname
-            redirectUrl.port = url.port
-            redirectUrl.protocol = url.protocol
-            redirectUrl.pathname = '/proxy' + redirectUrl.pathname
-            
-            console.log(`🔄 Rewriting redirect: ${location} -> ${redirectUrl.toString()}`)
-            
-            const responseHeaders = new Headers(response.headers)
-            responseHeaders.set('Location', redirectUrl.toString())
-            
-            return new Response(null, {
-              status: response.status,
-              headers: responseHeaders
-            })
-          }
-          
-          // If it's an OAuth callback (has code parameter), ensure it goes through proxy
-          if (redirectUrl.searchParams.has('code') || redirectUrl.searchParams.has('error')) {
-            // This might be an OAuth callback
-            if (!redirectUrl.pathname.startsWith('/proxy/')) {
-              const originalPath = redirectUrl.pathname
-              redirectUrl.pathname = '/proxy' + originalPath
-              
-              console.log(`🔄 Rewriting OAuth callback: ${location} -> ${redirectUrl.toString()}`)
-              
-              const responseHeaders = new Headers(response.headers)
-              responseHeaders.set('Location', redirectUrl.toString())
-              
-              return new Response(null, {
-                status: response.status,
-                headers: responseHeaders
-              })
-            }
-          }
-        } catch (e) {
-          // If URL parsing fails, it might be a relative redirect
-          if (!location.startsWith('http')) {
-            const newLocation = '/proxy' + (location.startsWith('/') ? location : '/' + location)
-            console.log(`🔄 Rewriting relative redirect: ${location} -> ${newLocation}`)
-            
-            const responseHeaders = new Headers(response.headers)
-            responseHeaders.set('Location', newLocation)
-            
-            return new Response(null, {
-              status: response.status,
-              headers: responseHeaders
-            })
-          }
-        }
+        console.log(`🔄 Redirect to: ${location}`)
+        
+        // For OAuth flow, we might need to handle redirects specially
+        // But for now, just pass them through
       }
     }
 
-    // For SSE responses, ensure proper headers
-    if (normalizedPath === '/sse' || response.headers.get('Content-Type')?.includes('text/event-stream')) {
-      console.log('📡 SSE Response Status:', response.status)
-      console.log('📡 SSE Response Headers:', Object.fromEntries(response.headers.entries()))
-      
-      // Check if this is an error response
-      if (response.status !== 200) {
-        const errorText = await response.text()
-        console.error('❌ SSE Error Response:', errorText)
-        
-        // For 401 responses, pass through all headers including WWW-Authenticate
-        const responseHeaders = new Headers(response.headers)
-        responseHeaders.set('Access-Control-Allow-Origin', '*')
-        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
-        
-        return new Response(errorText, {
-          status: response.status,
-          headers: responseHeaders
-        })
-      }
-      
-      const responseHeaders = new Headers(response.headers)
-      responseHeaders.set('Cache-Control', 'no-cache')
-      responseHeaders.set('Connection', 'keep-alive')
-      responseHeaders.set('X-Accel-Buffering', 'no')
-      
-      // CORS headers for SSE
-      responseHeaders.set('Access-Control-Allow-Origin', '*')
-      responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-      responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
-      
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: responseHeaders,
-      })
-    }
-
-    // Handle OAuth metadata endpoint - rewrite URLs in response
-    if (normalizedPath === '/.well-known/oauth-authorization-server' || 
-        normalizedPath === '/.well-known/openid-configuration') {
-      
-      let text: string
+    // Log response body for errors
+    if (response.status >= 400) {
+      const responseClone = response.clone()
       try {
-        text = await response.text()
+        const errorText = await responseClone.text()
+        console.log(`\n❌ ERROR RESPONSE BODY: ${errorText}`)
       } catch (e) {
-        console.error('Failed to read response text:', e)
-        // Try to read as arrayBuffer and convert
-        const buffer = await response.arrayBuffer()
-        const decoder = new TextDecoder()
-        text = decoder.decode(buffer)
-      }
-      
-      console.log(`OAuth metadata response: ${text.substring(0, 200)}...`)
-      
-      try {
-        const metadata = JSON.parse(text)
-        
-        // Rewrite all URLs to go through proxy
-        const urlFields = [
-          'issuer',
-          'authorization_endpoint',
-          'token_endpoint',
-          'registration_endpoint',
-          'revocation_endpoint',
-          'userinfo_endpoint',
-          'jwks_uri'
-        ]
-        
-        for (const field of urlFields) {
-          if (metadata[field] && metadata[field].includes('my-dimona-mcp.igor-9a5.workers.dev')) {
-            const originalUrl = new URL(metadata[field])
-            originalUrl.hostname = url.hostname
-            originalUrl.port = url.port
-            originalUrl.protocol = url.protocol
-            originalUrl.pathname = '/proxy' + originalUrl.pathname
-            metadata[field] = originalUrl.toString()
-            console.log(`🔄 Rewrote ${field}: ${metadata[field]}`)
-          }
-        }
-        
-        const responseHeaders = new Headers(response.headers)
-        responseHeaders.set('Access-Control-Allow-Origin', '*')
-        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
-        responseHeaders.set('Content-Type', 'application/json')
-        responseHeaders.delete('content-encoding')
-        responseHeaders.delete('content-length')
-        
-        const modifiedContent = JSON.stringify(metadata, null, 2)
-        responseHeaders.set('Content-Length', modifiedContent.length.toString())
-        
-        return new Response(modifiedContent, {
-          status: response.status,
-          headers: responseHeaders
-        })
-      } catch (e) {
-        console.error('Failed to parse OAuth metadata:', e)
-        console.error('Raw text first 500 chars:', text.substring(0, 500))
-        // If parsing fails, return the original text with CORS headers
-        const responseHeaders = new Headers(response.headers)
-        responseHeaders.set('Access-Control-Allow-Origin', '*')
-        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
-        responseHeaders.delete('content-encoding')
-        
-        return new Response(text, {
-          status: response.status,
-          headers: responseHeaders
-        })
+        console.log('Could not read error response body')
       }
     }
 
@@ -313,22 +142,28 @@ export default async (request: Request) => {
       headers: response.headers,
     })
 
-    // Ensure CORS headers
+    // Add CORS headers
     proxyResponse.headers.set('Access-Control-Allow-Origin', '*')
     proxyResponse.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
     proxyResponse.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
 
+    console.log('\n✅ Request completed successfully')
     return proxyResponse
+    
   } catch (error) {
-    console.error('❌ Proxy error:', error)
-    console.error('Stack trace:', error.stack)
+    console.error('\n❌ PROXY ERROR:', error)
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      type: error.constructor.name
+    })
+    
     return new Response(JSON.stringify({ 
       error: 'Proxy failed', 
       details: error.message,
-      path: normalizedPath,
-      targetUrl: finalProxyUrl,
+      path: path,
+      targetUrl: proxyUrl,
       method: request.method,
-      headers: Object.fromEntries(headers.entries())
     }), { 
       status: 500,
       headers: { 
