@@ -1,7 +1,18 @@
 // netlify/edge-functions/proxy.ts
 export default async (request: Request) => {
-  const targetUrl = 'https://my-dimona-mcp.igor-9a5.workers.dev'
   const url = new URL(request.url)
+  
+  console.log('🚨 EDGE FUNCTION CALLED')
+  console.log(`🚨 Method: ${request.method}, Full URL: ${url.href}`)
+  console.log(`🚨 Pathname: ${url.pathname}`)
+  
+  // If not under /proxy, log and return 404
+  if (!url.pathname.startsWith('/proxy')) {
+    console.log('❌ Request not under /proxy path - possible OAuth discovery attempt?')
+    return new Response('Not found', { status: 404 })
+  }
+  
+  const targetUrl = 'https://my-dimona-mcp.igor-9a5.workers.dev'
   
   console.log('========== INCOMING REQUEST ==========')
   console.log(`Method: ${request.method}`)
@@ -176,7 +187,7 @@ export default async (request: Request) => {
   }
 }
 
-// This function will handle all /proxy/* paths
+// This function will handle all paths
 export const config = {
-  path: "/proxy/*",
+  path: "/*",
 }
