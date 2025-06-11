@@ -14,6 +14,12 @@ export default async (request: Request) => {
         'Access-Control-Allow-Headers': 'Content-Type, Authorization, Mcp-Session-Id, Accept, Accept-Encoding',
         'Access-Control-Max-Age': '86400',
       }
+  
+  // For OAuth metadata endpoints, request uncompressed response
+  if (normalizedPath === '/.well-known/oauth-authorization-server' || 
+      normalizedPath === '/.well-known/openid-configuration') {
+    headers.set('Accept-Encoding', 'identity')
+  }
     })
   }
   
@@ -26,9 +32,6 @@ export default async (request: Request) => {
   
   console.log(`Proxying ${request.method} ${url.pathname} -> ${proxyUrl}`)
   console.log(`Normalized path: ${normalizedPath}`)
-  if (request.method === 'POST' || request.method === 'PUT') {
-    console.log(`Request has body: ${body !== undefined}`)
-  }
 
   // Clone headers and strip Content-Length: 0
   const headers = new Headers(request.headers)
@@ -37,26 +40,19 @@ export default async (request: Request) => {
     console.log('✅ Stripped Content-Length: 0 header')
   }
 
-  // Log POST body for debugging SSE endpoint
+  // For OAuth flow, we need to handle redirect_uri parameter
+  let body: BodyInit | undefined = undefined
+  
+  // Special handling for SSE POST requests
   if (request.method === 'POST' && normalizedPath === '/sse') {
     const clonedRequest = request.clone()
     const bodyText = await clonedRequest.text()
     console.log('📨 SSE POST body:', bodyText)
     
-    // Recreate the body for the actual request
+    // Set the body for the proxied request
     body = bodyText
     headers.set('Content-Length', bodyText.length.toString())
-  }
-  
-  // For OAuth metadata endpoints, request uncompressed response
-  if (normalizedPath === '/.well-known/oauth-authorization-server' || 
-      normalizedPath === '/.well-known/openid-configuration') {
-    headers.set('Accept-Encoding', 'identity')
-  }
-
-  // For OAuth flow, we need to handle redirect_uri parameter
-  let body: BodyInit | undefined = undefined
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
+  } else if (request.method !== 'GET' && request.method !== 'HEAD') {
     // Check if this is an OAuth authorize or token request
     if (path === '/authorize' || path === '/token') {
       const contentType = headers.get('Content-Type')
