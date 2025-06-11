@@ -175,6 +175,50 @@ export default async (request: Request) => {
       })
     }
 
+    // Handle OAuth metadata endpoint - rewrite URLs in response
+    if (path === '/.well-known/oauth-authorization-server' || 
+        path === '/.well-known/openid-configuration') {
+      const text = await response.text()
+      try {
+        const metadata = JSON.parse(text)
+        
+        // Rewrite all URLs to go through proxy
+        const urlFields = [
+          'issuer',
+          'authorization_endpoint',
+          'token_endpoint',
+          'registration_endpoint',
+          'revocation_endpoint',
+          'userinfo_endpoint',
+          'jwks_uri'
+        ]
+        
+        for (const field of urlFields) {
+          if (metadata[field] && metadata[field].includes('my-dimona-mcp.igor-9a5.workers.dev')) {
+            const originalUrl = new URL(metadata[field])
+            originalUrl.hostname = url.hostname
+            originalUrl.port = url.port
+            originalUrl.protocol = url.protocol
+            originalUrl.pathname = '/proxy' + originalUrl.pathname
+            metadata[field] = originalUrl.toString()
+            console.log(`🔄 Rewrote ${field}: ${metadata[field]}`)
+          }
+        }
+        
+        const responseHeaders = new Headers(response.headers)
+        responseHeaders.set('Access-Control-Allow-Origin', '*')
+        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
+        
+        return new Response(JSON.stringify(metadata, null, 2), {
+          status: response.status,
+          headers: responseHeaders
+        })
+      } catch (e) {
+        console.error('Failed to parse OAuth metadata:', e)
+      }
+    }
+
     // Create response with all original headers
     const proxyResponse = new Response(response.body, {
       status: response.status,
