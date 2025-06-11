@@ -3,11 +3,26 @@ export default async (request: Request) => {
   const targetUrl = 'https://my-dimona-mcp.igor-9a5.workers.dev'
   const url = new URL(request.url)
   
+  // Handle CORS preflight requests
+  if (request.method === 'OPTIONS') {
+    console.log('🔀 Handling OPTIONS preflight request')
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Mcp-Session-Id, Accept, Accept-Encoding',
+        'Access-Control-Max-Age': '86400',
+      }
+    })
+  }
+  
   // Forward the path after /proxy to your Worker
   const path = url.pathname.replace('/proxy', '') || '/'
   const proxyUrl = targetUrl + path + url.search
   
   console.log(`Proxying ${request.method} ${url.pathname} -> ${proxyUrl}`)
+  console.log(`Headers:`, Object.fromEntries(request.headers.entries()))
 
   // Clone headers and strip Content-Length: 0
   const headers = new Headers(request.headers)
@@ -21,6 +36,9 @@ export default async (request: Request) => {
       path === '/.well-known/openid-configuration') {
     headers.set('Accept-Encoding', 'identity')
   }
+  
+  // Ensure proper host header
+  headers.set('Host', 'my-dimona-mcp.igor-9a5.workers.dev')
 
   // For OAuth flow, we need to handle redirect_uri parameter
   let body: BodyInit | undefined = undefined
