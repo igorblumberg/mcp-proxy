@@ -25,7 +25,10 @@ export default async (request: Request) => {
   const proxyUrl = targetUrl + normalizedPath + url.search
   
   console.log(`Proxying ${request.method} ${url.pathname} -> ${proxyUrl}`)
-  console.log(`Headers:`, Object.fromEntries(request.headers.entries()))
+  console.log(`Normalized path: ${normalizedPath}`)
+  if (request.method === 'POST' || request.method === 'PUT') {
+    console.log(`Request has body: ${body !== undefined}`)
+  }
 
   // Clone headers and strip Content-Length: 0
   const headers = new Headers(request.headers)
@@ -34,6 +37,17 @@ export default async (request: Request) => {
     console.log('✅ Stripped Content-Length: 0 header')
   }
 
+  // Log POST body for debugging SSE endpoint
+  if (request.method === 'POST' && normalizedPath === '/sse') {
+    const clonedRequest = request.clone()
+    const bodyText = await clonedRequest.text()
+    console.log('📨 SSE POST body:', bodyText)
+    
+    // Recreate the body for the actual request
+    body = bodyText
+    headers.set('Content-Length', bodyText.length.toString())
+  }
+  
   // For OAuth metadata endpoints, request uncompressed response
   if (normalizedPath === '/.well-known/oauth-authorization-server' || 
       normalizedPath === '/.well-known/openid-configuration') {
@@ -192,15 +206,15 @@ export default async (request: Request) => {
         const errorText = await response.text()
         console.error('❌ SSE Error Response:', errorText)
         
-        // Return the error with CORS headers
+        // For 401 responses, pass through all headers including WWW-Authenticate
+        const responseHeaders = new Headers(response.headers)
+        responseHeaders.set('Access-Control-Allow-Origin', '*')
+        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
+        
         return new Response(errorText, {
           status: response.status,
-          headers: {
-            'Content-Type': 'text/plain',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization, Mcp-Session-Id'
-          }
+          headers: responseHeaders
         })
       }
       
