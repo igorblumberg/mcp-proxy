@@ -3,18 +3,12 @@ export default async (request: Request) => {
   const targetUrl = 'https://my-dimona-mcp.igor-9a5.workers.dev'
   const url = new URL(request.url)
   
-  // Log incoming request
-  console.log('>>> INCOMING REQUEST:', request.method, url.pathname + url.search)
-  console.log('>>> Headers:')
-  request.headers.forEach((value, key) => {
-    console.log(`    ${key}: ${value}`)
-  })
+  console.log('>>> REQUEST:', request.method, url.pathname)
   
   // Build target URL
-  const path = url.pathname
-  const targetUrlWithPath = targetUrl + path + url.search
+  const targetUrlWithPath = targetUrl + url.pathname + url.search
   
-  // Copy all headers except Content-Length: 0
+  // Copy headers, excluding problematic ones
   const headers = new Headers()
   request.headers.forEach((value, key) => {
     const lowerKey = key.toLowerCase()
@@ -38,15 +32,10 @@ export default async (request: Request) => {
     headers.set(key, value)
   })
   
-  // Log outgoing request
-  console.log('<<< OUTGOING REQUEST:', request.method, targetUrlWithPath)
-  console.log('<<< Headers:')
-  headers.forEach((value, key) => {
-    console.log(`    ${key}: ${value}`)
-  })
+  console.log('<<< PROXYING TO:', targetUrlWithPath)
   
   try {
-    // Make the request - pass everything through
+    // Make the request
     const response = await fetch(targetUrlWithPath, {
       method: request.method,
       headers: headers,
@@ -54,14 +43,48 @@ export default async (request: Request) => {
       redirect: 'manual',
     })
     
-    // Log response
-    console.log('>>> RESPONSE:', response.status, response.statusText)
-    console.log('>>> Headers:')
-    response.headers.forEach((value, key) => {
-      console.log(`    ${key}: ${value}`)
-    })
+    console.log('>>> RESPONSE:', response.status)
     
-    // Return response exactly as received
+    // Special handling for OAuth metadata endpoints
+    if (url.pathname === '/.well-known/oauth-authorization-server' || 
+        url.pathname === '/.well-known/openid-configuration') {
+      
+      console.log('!!! OAuth metadata endpoint detected')
+      
+      const text = await response.text()
+      console.log('Original metadata:', text)
+      
+      try {
+        const metadata = JSON.parse(text)
+        
+        // Replace all Cloudflare URLs with proxy URLs
+        const jsonString = JSON.stringify(metadata)
+        const modifiedJson = jsonString.replace(
+          /https:\/\/my-dimona-mcp\.igor-9a5\.workers\.dev/g,
+          'https://dimonamcpproxy.netlify.app'
+        )
+        
+        const modifiedMetadata = JSON.parse(modifiedJson)
+        console.log('Modified metadata:', JSON.stringify(modifiedMetadata, null, 2))
+        
+        return new Response(JSON.stringify(modifiedMetadata, null, 2), {
+          status: response.status,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          }
+        })
+      } catch (e) {
+        console.error('Failed to process OAuth metadata:', e)
+        // Return original response if processing fails
+        return new Response(text, {
+          status: response.status,
+          headers: response.headers
+        })
+      }
+    }
+    
+    // For all other requests, return as-is
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
@@ -69,7 +92,7 @@ export default async (request: Request) => {
     })
     
   } catch (error) {
-    console.error('!!! ERROR:', error)
+    console.error('!!! PROXY ERROR:', error)
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
