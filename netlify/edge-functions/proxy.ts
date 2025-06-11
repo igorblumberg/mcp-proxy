@@ -39,9 +39,6 @@ export default async (request: Request) => {
       normalizedPath === '/.well-known/openid-configuration') {
     headers.set('Accept-Encoding', 'identity')
   }
-  
-  // Ensure proper host header
-  headers.set('Host', 'my-dimona-mcp.igor-9a5.workers.dev')
 
   // For OAuth flow, we need to handle redirect_uri parameter
   let body: BodyInit | undefined = undefined
@@ -187,6 +184,26 @@ export default async (request: Request) => {
 
     // For SSE responses, ensure proper headers
     if (normalizedPath === '/sse' || response.headers.get('Content-Type')?.includes('text/event-stream')) {
+      console.log('📡 SSE Response Status:', response.status)
+      console.log('📡 SSE Response Headers:', Object.fromEntries(response.headers.entries()))
+      
+      // Check if this is an error response
+      if (response.status !== 200) {
+        const errorText = await response.text()
+        console.error('❌ SSE Error Response:', errorText)
+        
+        // Return the error with CORS headers
+        return new Response(errorText, {
+          status: response.status,
+          headers: {
+            'Content-Type': 'text/plain',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, Mcp-Session-Id'
+          }
+        })
+      }
+      
       const responseHeaders = new Headers(response.headers)
       responseHeaders.set('Cache-Control', 'no-cache')
       responseHeaders.set('Connection', 'keep-alive')
