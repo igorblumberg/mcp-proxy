@@ -11,20 +11,30 @@ export default async (request: Request) => {
   })
   
   // Build target URL
-  const path = url.pathname.replace('/proxy', '') || '/'
+  const path = url.pathname
   const targetUrlWithPath = targetUrl + path + url.search
   
   // Copy all headers except Content-Length: 0
   const headers = new Headers()
   request.headers.forEach((value, key) => {
-    if (key.toLowerCase() === 'content-length' && value === '0') {
+    const lowerKey = key.toLowerCase()
+    
+    // Skip Content-Length: 0
+    if (lowerKey === 'content-length' && value === '0') {
       console.log('!!! Stripping Content-Length: 0')
       return
     }
-    // Skip host header - fetch will set it
-    if (key.toLowerCase() === 'host') {
+    
+    // Skip headers that shouldn't be forwarded
+    if (lowerKey === 'host' || 
+        lowerKey.startsWith('x-nf-') || 
+        lowerKey === 'cdn-loop' ||
+        lowerKey === 'x-forwarded-for' ||
+        lowerKey === 'x-cloud-trace-context' ||
+        lowerKey === 'traceparent') {
       return
     }
+    
     headers.set(key, value)
   })
   
@@ -67,7 +77,7 @@ export default async (request: Request) => {
   }
 }
 
-// Handle all /proxy/* paths
+// Handle all paths
 export const config = {
-  path: "/proxy/*",
+  path: "/*",
 }
