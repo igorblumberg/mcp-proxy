@@ -5,6 +5,11 @@ export default async (request: Request) => {
   
   console.log('>>> REQUEST:', request.method, url.pathname)
   
+  // Special logging for OAuth discovery
+  if (url.pathname.includes('.well-known')) {
+    console.log('🔍 OAuth Discovery Request Detected!')
+  }
+  
   // Build target URL
   const targetUrlWithPath = targetUrl + url.pathname + url.search
   
@@ -31,6 +36,11 @@ export default async (request: Request) => {
     
     headers.set(key, value)
   })
+  
+  // For OAuth metadata, request uncompressed response
+  if (url.pathname.includes('.well-known')) {
+    headers.set('Accept-Encoding', 'identity')
+  }
   
   console.log('<<< PROXYING TO:', targetUrlWithPath)
   
