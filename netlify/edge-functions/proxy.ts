@@ -209,6 +209,7 @@ export default async (request: Request) => {
         responseHeaders.set('Access-Control-Allow-Origin', '*')
         responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
         responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
+        responseHeaders.set('Content-Type', 'application/json')
         
         return new Response(JSON.stringify(metadata, null, 2), {
           status: response.status,
@@ -216,6 +217,16 @@ export default async (request: Request) => {
         })
       } catch (e) {
         console.error('Failed to parse OAuth metadata:', e)
+        // If parsing fails, return the original text with CORS headers
+        const responseHeaders = new Headers(response.headers)
+        responseHeaders.set('Access-Control-Allow-Origin', '*')
+        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id')
+        
+        return new Response(text, {
+          status: response.status,
+          headers: responseHeaders
+        })
       }
     }
 
